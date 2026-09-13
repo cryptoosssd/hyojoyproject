@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Товар — HyoJoy</title>
+<style>
+:root {
+    --bg: #1a1a1a; --bg-panel: #2a2a2a; --bg-input: #1f1f1f;
+    --bg-input-focus: #242424; --bg-hover: #3a3a3a; --bg-active: #4a4a4a;
+    --border: #3a3a3a; --border-hover: #555555;
+    --text: #e0e0e0; --text-dim: #999999; --text-strong: #ffffff; --text-muted: #888888;
+    --danger: #cc8888; --danger-bg: #3a1f1f; --danger-border: #553333;
+    --success: #88cc88; --success-bg: #1f3a1f; --success-border: #335533;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
+body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; transition: 0.2s; }
+
+.header {
+    background: var(--bg-panel); border-bottom: 1px solid var(--border);
+    padding: 14px 30px;
+    display: flex; justify-content: space-between; align-items: center;
+}
+.logo { color: var(--text-strong); font-size: 18px; letter-spacing: 3px; text-transform: uppercase; font-weight: bold; cursor: pointer; }
+.back-btn {
+    background: none; border: 1px solid var(--border-hover); color: var(--text);
+    padding: 8px 16px; font-size: 12px; letter-spacing: 1px;
+    text-transform: uppercase; cursor: pointer; transition: 0.2s;
+    margin-right: 10px;
+}
+.back-btn:hover { background: var(--bg-hover); color: var(--text-strong); }
+
+.main { flex: 1; padding: 60px 40px; max-width: 1100px; margin: 0 auto; width: 100%; }
+
+.product {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: start;
+}
+@media (max-width: 800px) {
+    .product { grid-template-columns: 1fr; gap: 30px; }
+}
+
+.product-img {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    padding: 40px; display: flex; justify-content: center; align-items: center;
+    min-height: 400px;
+}
+.product-img img { max-width: 100%; max-height: 400px; object-fit: contain; }
+
+.product-info h1 {
+    font-size: 32px; color: var(--text-strong); margin-bottom: 16px;
+    font-weight: 400; letter-spacing: -0.5px;
+}
+.stock {
+    display: inline-block; padding: 4px 10px; font-size: 11px;
+    letter-spacing: 1px; text-transform: uppercase;
+    background: var(--success-bg); color: var(--success);
+    border: 1px solid var(--success-border); margin-bottom: 20px;
+}
+.stock.out { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
+.price {
+    font-size: 42px; color: var(--text-strong); margin-bottom: 24px;
+    font-weight: 300; letter-spacing: 1px;
+}
+.desc { color: var(--text); line-height: 1.7; font-size: 14px; margin-bottom: 32px; }
+
+.add-btn {
+    width: 100%; padding: 18px; background: var(--bg-active);
+    border: 1px solid var(--border-hover); color: var(--text-strong);
+    font-size: 14px; letter-spacing: 2px; text-transform: uppercase;
+    cursor: pointer; transition: 0.2s;
+}
+.add-btn:hover { background: var(--bg-hover); }
+.add-btn.added { background: var(--success-bg); color: var(--success); border-color: var(--success-border); }
+.add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.not-found { text-align: center; padding: 80px 0; color: var(--text-muted); font-size: 16px; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div class="logo" onclick="location.href='index.html'">HyoJoy</div>
+    <div>
+        <button class="back-btn" onclick="location.href='store.html'">Назад</button>
+        <button class="back-btn" onclick="location.href='cart.html'">Корзина (<span id="cart-count">0</span>)</button>
+    </div>
+</div>
+
+<div class="main" id="main"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import {
+    initSettings, loadSettings, PRODUCTS, formatPrice, tStore,
+    addToCart, getCartCount
+} from './common.js';
+
+initSettings();
+
+const firebaseConfig = {
+    apiKey: "AIzaSyCUSTTJhonzZPOKWUbe_qMZfMmVyFSxjPE",
+    authDomain: "hyojoy-41840.firebaseapp.com",
+    projectId: "hyojoy-41840",
+    storageBucket: "hyojoy-41840.firebasestorage.app",
+    messagingSenderId: "714253431446",
+    appId: "1:714253431446:web:fe08e2cbe51c768dfd48b7",
+    measurementId: "G-DQ3F2VMTCJ"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+
+onAuthStateChanged(auth, (user) => {
+    if (!user) {
+        window.location.href = 'auth.html';
+        return;
+    }
+    render();
+});
+
+function render() {
+    const settings = loadSettings();
+    const lang = settings.lang;
+
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('id');
+    const product = PRODUCTS.find((p) => p.id === id);
+    const main = document.getElementById('main');
+
+    document.getElementById('cart-count').textContent = getCartCount();
+
+    if (!product) {
+        main.innerHTML = `<div class="not-found">${tStore('store.product_not_found', lang)}</div>`;
+        return;
+    }
+
+    const title = product.title[lang] || product.title.ru;
+    const desc = product.description[lang] || product.description.ru;
+    const inStock = product.stock > 0;
+
+    main.innerHTML = `
+        <div class="product">
+            <div class="product-img">
+                <img src="${product.image}" alt="${title}">
+            </div>
+            <div class="product-info">
+                <h1>${title}</h1>
+                <div class="stock ${inStock ? '' : 'out'}">
+                    ${inStock ? tStore('store.in_stock', lang) : tStore('store.out_of_stock', lang)}
+                </div>
+                <div class="price">${formatPrice(product.price, lang)}</div>
+                <p class="desc">${desc}</p>
+                <button class="add-btn" id="add-btn" ${inStock ? '' : 'disabled'}>
+                    ${tStore('store.add_to_cart', lang)}
+                </button>
+            </div>
+        </div>
+    `;
+
+    document.title = title + ' — HyoJoy';
+
+    const btn = document.getElementById('add-btn');
+    btn.addEventListener('click', () => {
+        addToCart(product.id, 1);
+        document.getElementById('cart-count').textContent = getCartCount();
+        btn.classList.add('added');
+        btn.textContent = tStore('store.added', lang);
+        setTimeout(() => {
+            btn.classList.remove('added');
+            btn.textContent = tStore('store.add_to_cart', lang);
+        }, 1500);
+    });
+}
+</script>
+</body>
+</html>

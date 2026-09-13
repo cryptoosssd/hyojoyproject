@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HyoJoy</title>
+<style>
+:root {
+    --bg: #1a1a1a; --bg-panel: #2a2a2a; --bg-input: #1f1f1f;
+    --bg-input-focus: #242424; --bg-hover: #3a3a3a; --bg-active: #4a4a4a;
+    --border: #3a3a3a; --border-hover: #555555;
+    --text: #e0e0e0; --text-dim: #999999; --text-strong: #ffffff; --text-muted: #888888;
+    --danger: #cc8888; --danger-bg: #3a1f1f; --danger-border: #553333;
+    --success: #88cc88; --success-bg: #1f3a1f; --success-border: #335533;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
+body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; transition: 0.2s; }
+
+.header {
+    background: var(--bg-panel); border-bottom: 1px solid var(--border);
+    padding: 14px 30px;
+    display: flex; justify-content: space-between; align-items: center;
+    position: relative;
+}
+.logo { color: var(--text-strong); font-size: 18px; letter-spacing: 3px; text-transform: uppercase; font-weight: bold; }
+
+.nav { display: flex; align-items: center; gap: 30px; }
+.nav-btn {
+    background: none; border: none; color: var(--text-dim);
+    font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
+    cursor: pointer; transition: 0.2s; padding: 8px 4px;
+}
+.nav-btn:hover { color: var(--text-strong); }
+.nav-btn.active { color: var(--text-strong); border-bottom: 2px solid var(--border-hover); }
+
+.avatar-wrap { position: relative; }
+.avatar {
+    width: 42px; height: 42px; border-radius: 50%;
+    background: var(--bg-active); border: 1px solid var(--border-hover);
+    color: var(--text-strong); font-size: 16px; font-weight: bold;
+    display: flex; justify-content: center; align-items: center;
+    cursor: pointer; text-transform: uppercase;
+    transition: 0.2s; user-select: none;
+}
+.avatar:hover { background: var(--bg-hover); }
+
+.dropdown {
+    position: absolute; top: 54px; right: 0;
+    background: var(--bg-panel); border: 1px solid var(--border);
+    min-width: 220px;
+    display: none; flex-direction: column;
+    z-index: 10;
+}
+.dropdown.open { display: flex; }
+.dropdown-item {
+    background: none; border: none; text-align: left;
+    padding: 14px 18px; color: var(--text);
+    font-size: 13px; letter-spacing: 1px; text-transform: uppercase;
+    cursor: pointer; transition: 0.15s;
+    border-bottom: 1px solid var(--border);
+}
+.dropdown-item:last-child { border-bottom: none; color: var(--danger); }
+.dropdown-item:hover { background: var(--bg-hover); color: var(--text-strong); }
+.dropdown-item:last-child:hover { background: var(--danger-bg); }
+
+.main { flex: 1; padding: 60px 40px; }
+h1 { font-size: 32px; letter-spacing: 3px; margin-bottom: 20px; color: var(--text-strong); }
+p.subtitle { color: var(--text-muted); font-size: 14px; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div class="logo">HyoJoy</div>
+
+    <div class="nav">
+        <button class="nav-btn active" data-i18n="nav.home">Главная</button>
+        <button class="nav-btn" onclick="location.href='store.html'" data-i18n="nav.shop">Магазин</button>
+        <button class="nav-btn" onclick="location.href='users.html'" data-i18n="nav.accounts">Аккаунты</button>
+        <button class="nav-btn" onclick="location.href='invest.html'">Инвестиции</button>
+        <button class="nav-btn" onclick="location.href='cart.html'">
+            <span data-i18n="store.cart">Корзина</span> (<span id="cart-count">0</span>)
+        </button>
+
+        <div class="avatar-wrap">
+            <div class="avatar" id="avatar">?</div>
+            <div class="dropdown" id="dropdown">
+                <button class="dropdown-item" onclick="location.href='account.html'" data-i18n="menu.account_editor">Редактор аккаунта</button>
+                <button class="dropdown-item" onclick="location.href='settings.html'" data-i18n="menu.settings">Настройки</button>
+                <button class="dropdown-item" id="logout-btn" data-i18n="menu.logout">Выйти с аккаунта</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="main">
+    <h1 data-i18n="home.welcome">Добро пожаловать в HyoJoy</h1>
+    <p class="subtitle" data-i18n="home.subtitle">Выберите раздел в меню сверху</p>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { initSettings, applyLang, loadSettings, getCartCount } from './common.js';
+
+initSettings();
+
+const firebaseConfig = {
+    apiKey: "AIzaSyCUSTTJhonzZPOKWUbe_qMZfMmVyFSxjPE",
+    authDomain: "hyojoy-41840.firebaseapp.com",
+    projectId: "hyojoy-41840",
+    storageBucket: "hyojoy-41840.firebasestorage.app",
+    messagingSenderId: "714253431446",
+    appId: "1:714253431446:web:fe08e2cbe51c768dfd48b7",
+    measurementId: "G-DQ3F2VMTCJ"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+
+const settings = loadSettings();
+applyLang(settings.lang);
+document.getElementById('cart-count').textContent = getCartCount();
+
+onAuthStateChanged(auth, (user) => {
+    if (!user) {
+        window.location.href = 'auth.html';
+        return;
+    }
+    const nick = user.displayName || user.email.split('@')[0];
+    document.getElementById('avatar').textContent = nick.charAt(0).toUpperCase();
+});
+
+document.getElementById('avatar').addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.getElementById('dropdown').classList.toggle('open');
+});
+
+document.addEventListener('click', () => {
+    document.getElementById('dropdown').classList.remove('open');
+});
+
+document.getElementById('logout-btn').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await signOut(auth);
+    window.location.href = 'auth.html';
+});
+</script>
+</body>
+</html>
