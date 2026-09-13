@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Аккаунты — HyoJoy</title>
+<title>Вход / Регистрация — HyoJoy</title>
 <style>
 :root {
     --bg: #1a1a1a; --bg-panel: #2a2a2a; --bg-input: #1f1f1f;
@@ -14,83 +14,88 @@
     --success: #88cc88; --success-bg: #1f3a1f; --success-border: #335533;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
-body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; transition: 0.2s; }
-
-.header {
-    background: var(--bg-panel); border-bottom: 1px solid var(--border);
-    padding: 14px 30px;
-    display: flex; justify-content: space-between; align-items: center;
+body { background: var(--bg); color: var(--text); display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+.container { background: var(--bg-panel); padding: 40px; width: 360px; border: 1px solid var(--border); }
+.tabs { display: flex; margin-bottom: 30px; }
+.tab {
+    flex: 1; padding: 14px; background: var(--bg-active); color: var(--text-dim);
+    border: 1px solid var(--border); cursor: pointer; text-align: center;
+    font-size: 14px; letter-spacing: 1px; text-transform: uppercase;
+    transition: 0.2s;
 }
-.logo { color: var(--text-strong); font-size: 18px; letter-spacing: 3px; text-transform: uppercase; font-weight: bold; cursor: pointer; }
-.back-btn {
-    background: none; border: 1px solid var(--border-hover); color: var(--text);
-    padding: 8px 16px; font-size: 12px; letter-spacing: 1px;
-    text-transform: uppercase; cursor: pointer; transition: 0.2s;
+.tab.active { background: var(--bg-hover); color: var(--text-strong); border-color: var(--border-hover); }
+.tab:hover:not(.active) { background: var(--bg-hover); color: var(--text); }
+.form { display: none; }
+.form.active { display: block; }
+.input-group { margin-bottom: 18px; }
+.input-group label {
+    display: block; font-size: 12px; color: var(--text-dim);
+    margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px;
 }
-.back-btn:hover { background: var(--bg-hover); color: var(--text-strong); }
-
-.main { flex: 1; padding: 40px; }
-h1 { font-size: 22px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-strong); margin-bottom: 8px; }
-.subtitle { color: var(--text-muted); font-size: 13px; margin-bottom: 30px; letter-spacing: 1px; }
-
-.table-wrap { background: var(--bg-panel); border: 1px solid var(--border); overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; min-width: 600px; }
-thead { background: var(--bg-active); }
-th {
-    text-align: left; padding: 14px 18px;
-    font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
-    color: var(--text-dim); font-weight: normal;
-    border-bottom: 1px solid var(--border);
+.input-group input {
+    width: 100%; padding: 14px; background: var(--bg-input);
+    border: 1px solid var(--border); color: var(--text); font-size: 14px;
+    outline: none; transition: 0.2s;
 }
-td { padding: 14px 18px; font-size: 13px; color: var(--text); border-bottom: 1px solid var(--border); }
-tbody tr:hover { background: var(--bg-hover); }
-tbody tr:last-child td { border-bottom: none; }
-td.num { color: var(--text-muted); width: 50px; }
-td.nick { color: var(--text-strong); font-weight: bold; }
-td.uid { color: var(--text-muted); font-family: monospace; font-size: 12px; }
-td.date { color: var(--text-muted); font-size: 12px; }
-.loading, .empty {
-    padding: 40px; text-align: center;
-    color: var(--text-muted); font-size: 13px; letter-spacing: 2px;
-    text-transform: uppercase;
+.input-group input:focus { border-color: var(--border-hover); background: var(--bg-input-focus); }
+.btn {
+    width: 100%; padding: 16px; background: var(--bg-active);
+    border: 1px solid var(--border-hover); color: var(--text-strong);
+    font-size: 14px; letter-spacing: 1px; text-transform: uppercase;
+    cursor: pointer; transition: 0.2s; margin-top: 10px;
 }
+.btn:hover { background: var(--bg-hover); }
+.btn:active { background: var(--bg-active); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.message { margin-top: 16px; padding: 12px; font-size: 13px; text-align: center; display: none; border: 1px solid; }
+.message.error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); display: block; }
+.message.success { background: var(--success-bg); color: var(--success); border-color: var(--success-border); display: block; }
 </style>
 </head>
 <body>
-
-<div class="header">
-    <div class="logo" onclick="location.href='index.html'">HyoJoy</div>
-    <button class="back-btn" onclick="location.href='index.html'" data-i18n="users.back">Назад</button>
-</div>
-
-<div class="main">
-    <h1 data-i18n="users.title">Все аккаунты</h1>
-    <p class="subtitle" id="subtitle" data-i18n="users.loading">Загрузка...</p>
-
-    <div class="table-wrap">
-        <table>
-            <thead>
-                <tr>
-                    <th data-i18n="users.num">#</th>
-                    <th data-i18n="users.nick">Ник</th>
-                    <th data-i18n="users.tag">Тег (UID)</th>
-                    <th data-i18n="users.date">Дата регистрации</th>
-                </tr>
-            </thead>
-            <tbody id="tbody"></tbody>
-        </table>
+<div class="container">
+    <div class="tabs">
+        <div class="tab active" data-tab="login">Вход</div>
+        <div class="tab" data-tab="register">Регистрация</div>
     </div>
 
-    <div class="loading" id="loading" data-i18n="users.loading">Загрузка списка...</div>
+    <div class="form active" id="login-form">
+        <div class="input-group">
+            <label>Ник</label>
+            <input type="text" id="login-nick" placeholder="Введите ник">
+        </div>
+        <div class="input-group">
+            <label>Пароль</label>
+            <input type="password" id="login-pass" placeholder="Введите пароль">
+        </div>
+        <button class="btn" id="login-btn">Войти</button>
+        <div class="message" id="login-msg"></div>
+    </div>
+
+    <div class="form" id="register-form">
+        <div class="input-group">
+            <label>Ник</label>
+            <input type="text" id="reg-nick" placeholder="Придумайте ник">
+        </div>
+        <div class="input-group">
+            <label>Пароль</label>
+            <input type="password" id="reg-pass" placeholder="Придумайте пароль">
+        </div>
+        <div class="input-group">
+            <label>Повторите пароль</label>
+            <input type="password" id="reg-pass2" placeholder="Повторите пароль">
+        </div>
+        <button class="btn" id="reg-btn">Зарегистрироваться</button>
+        <div class="message" id="reg-msg"></div>
+    </div>
 </div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { initSettings, loadSettings, LANGS } from './common.js';
-
-initSettings();
+import {
+    getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getFirestore, doc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const firebaseConfig = {
     apiKey: "AIzaSyCUSTTJhonzZPOKWUbe_qMZfMmVyFSxjPE",
@@ -106,69 +111,82 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-function formatDate(iso) {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return '—';
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const nickToEmail = (nick) => nick.toLowerCase() + "@mysite.local";
+
+// Никаких onAuthStateChanged — только форма. Это ломает цикл редиректов.
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.form').forEach(f => f.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.tab + '-form').classList.add('active');
+    });
+});
+
+function showMessage(id, text, type) {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.className = 'message ' + type;
 }
 
-function shortUid(uid) { return uid.slice(0, 8); }
-
-function escapeHtml(str) {
-    return String(str)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+function translateError(code) {
+    const map = {
+        'auth/email-already-in-use': 'Такой ник уже занят',
+        'auth/invalid-credential': 'Неверный ник или пароль',
+        'auth/wrong-password': 'Неверный пароль',
+        'auth/user-not-found': 'Пользователь не найден',
+        'auth/weak-password': 'Пароль слишком простой',
+        'auth/too-many-requests': 'Слишком много попыток',
+        'auth/network-request-failed': 'Ошибка сети',
+        'auth/unauthorized-domain': 'Домен не разрешён в Firebase (Authorized domains)',
+        'auth/invalid-email': 'Ник содержит недопустимые символы'
+    };
+    return map[code] || 'Ошибка: ' + code;
 }
 
-onAuthStateChanged(auth, async (user) => {
-    if (!user) {
-        window.location.href = 'auth.html';
-        return;
-    }
+document.getElementById('reg-btn').addEventListener('click', async () => {
+    const nick = document.getElementById('reg-nick').value.trim();
+    const pass = document.getElementById('reg-pass').value;
+    const pass2 = document.getElementById('reg-pass2').value;
 
-    const tbody = document.getElementById('tbody');
-    const loading = document.getElementById('loading');
-    const subtitle = document.getElementById('subtitle');
-    const settings = loadSettings();
-    const t = LANGS[settings.lang].t;
+    if (!nick || !pass || !pass2) return showMessage('reg-msg', 'Заполните все поля', 'error');
+    if (nick.length < 3) return showMessage('reg-msg', 'Ник минимум 3 символа', 'error');
+    if (!/^[a-zA-Z0-9_]+$/.test(nick)) return showMessage('reg-msg', 'Ник: латиница, цифры, _', 'error');
+    if (pass.length < 6) return showMessage('reg-msg', 'Пароль минимум 6 символов', 'error');
+    if (pass !== pass2) return showMessage('reg-msg', 'Пароли не совпадают', 'error');
 
+    const btn = document.getElementById('reg-btn');
+    btn.disabled = true;
     try {
-        const snap = await getDocs(collection(db, 'users'));
-        loading.style.display = 'none';
-
-        if (snap.empty) {
-            subtitle.textContent = t['users.empty'];
-            const tr = document.createElement('tr');
-            tr.innerHTML = `<td colspan="4" class="empty">—</td>`;
-            tbody.appendChild(tr);
-            return;
-        }
-
-        const items = [];
-        snap.forEach((d) => items.push({ id: d.id, ...d.data() }));
-        items.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
-
-        subtitle.textContent = `${t['users.total']}: ${items.length}`;
-
-        let i = 1;
-        items.forEach((data) => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td class="num">${i}</td>
-                <td class="nick">${escapeHtml(data.nick || '—')}</td>
-                <td class="uid" title="${data.id}">#${shortUid(data.id)}</td>
-                <td class="date">${formatDate(data.createdAt)}</td>
-            `;
-            tbody.appendChild(tr);
-            i++;
+        const cred = await createUserWithEmailAndPassword(auth, nickToEmail(nick), pass);
+        await updateProfile(cred.user, { displayName: nick });
+        await setDoc(doc(db, 'users', cred.user.uid), {
+            nick: nick,
+            createdAt: new Date().toISOString()
         });
+        showMessage('reg-msg', 'Регистрация успешна', 'success');
+        setTimeout(() => window.location.href = 'index.html', 800);
     } catch (e) {
-        loading.textContent = 'Ошибка: ' + e.message;
-        console.error(e);
+        showMessage('reg-msg', translateError(e.code), 'error');
     }
+    btn.disabled = false;
+});
+
+document.getElementById('login-btn').addEventListener('click', async () => {
+    const nick = document.getElementById('login-nick').value.trim();
+    const pass = document.getElementById('login-pass').value;
+    if (!nick || !pass) return showMessage('login-msg', 'Заполните все поля', 'error');
+
+    const btn = document.getElementById('login-btn');
+    btn.disabled = true;
+    try {
+        await signInWithEmailAndPassword(auth, nickToEmail(nick), pass);
+        showMessage('login-msg', 'Успешный вход', 'success');
+        setTimeout(() => window.location.href = 'index.html', 800);
+    } catch (e) {
+        showMessage('login-msg', translateError(e.code), 'error');
+    }
+    btn.disabled = false;
 });
 </script>
 </body>
