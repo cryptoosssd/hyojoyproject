@@ -14,7 +14,7 @@
     --success: #88cc88; --success-bg: #1f3a1f; --success-border: #335533;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
-body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; transition: 0.2s; }
+body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
 
 .header {
     background: var(--bg-panel); border-bottom: 1px solid var(--border);
@@ -42,13 +42,39 @@ th {
     color: var(--text-dim); font-weight: normal;
     border-bottom: 1px solid var(--border);
 }
-td { padding: 14px 18px; font-size: 13px; color: var(--text); border-bottom: 1px solid var(--border); }
+td { padding: 14px 18px; font-size: 13px; color: var(--text); border-bottom: 1px solid var(--border); vertical-align: middle; }
 tbody tr:hover { background: var(--bg-hover); }
 tbody tr:last-child td { border-bottom: none; }
 td.num { color: var(--text-muted); width: 50px; }
-td.nick { color: var(--text-strong); font-weight: bold; }
 td.uid { color: var(--text-muted); font-family: monospace; font-size: 12px; }
 td.date { color: var(--text-muted); font-size: 12px; }
+
+/* Ник + аватар */
+.nick-cell { display: flex; align-items: center; gap: 12px; }
+.avatar-mini {
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    background: var(--bg-active);
+    border: 1px solid var(--border-hover);
+    color: var(--text-strong);
+    font-size: 16px; font-weight: bold;
+    display: flex; justify-content: center; align-items: center;
+    overflow: hidden;
+    text-transform: uppercase;
+    user-select: none;
+    flex-shrink: 0;
+}
+.avatar-mini img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.nick-name { color: var(--text-strong); font-weight: bold; }
+.user-status {
+    font-size: 11px;
+    letter-spacing: 1px;
+    margin-top: 3px;
+    font-weight: bold;
+}
+
 .loading, .empty {
     padding: 40px; text-align: center;
     color: var(--text-muted); font-size: 13px; letter-spacing: 2px;
@@ -60,37 +86,34 @@ td.date { color: var(--text-muted); font-size: 12px; }
 
 <div class="header">
     <div class="logo" onclick="location.href='index.html'">HyoJoy</div>
-    <button class="back-btn" onclick="location.href='index.html'" data-i18n="users.back">Назад</button>
+    <button class="back-btn" onclick="location.href='index.html'">Назад</button>
 </div>
 
 <div class="main">
-    <h1 data-i18n="users.title">Все аккаунты</h1>
-    <p class="subtitle" id="subtitle" data-i18n="users.loading">Загрузка...</p>
+    <h1>Все аккаунты</h1>
+    <p class="subtitle" id="subtitle">Загрузка...</p>
 
     <div class="table-wrap">
         <table>
             <thead>
                 <tr>
-                    <th data-i18n="users.num">#</th>
-                    <th data-i18n="users.nick">Ник</th>
-                    <th data-i18n="users.tag">Тег (UID)</th>
-                    <th data-i18n="users.date">Дата регистрации</th>
+                    <th>#</th>
+                    <th>Ник</th>
+                    <th>Тег (UID)</th>
+                    <th>Дата регистрации</th>
                 </tr>
             </thead>
             <tbody id="tbody"></tbody>
         </table>
     </div>
 
-    <div class="loading" id="loading" data-i18n="users.loading">Загрузка списка...</div>
+    <div class="loading" id="loading">Загрузка списка...</div>
 </div>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { initSettings, loadSettings, LANGS } from './common.js';
-
-initSettings();
 
 const firebaseConfig = {
     apiKey: "AIzaSyCUSTTJhonzZPOKWUbe_qMZfMmVyFSxjPE",
@@ -132,15 +155,13 @@ onAuthStateChanged(auth, async (user) => {
     const tbody = document.getElementById('tbody');
     const loading = document.getElementById('loading');
     const subtitle = document.getElementById('subtitle');
-    const settings = loadSettings();
-    const t = LANGS[settings.lang].t;
 
     try {
         const snap = await getDocs(collection(db, 'users'));
         loading.style.display = 'none';
 
         if (snap.empty) {
-            subtitle.textContent = t['users.empty'];
+            subtitle.textContent = 'Пока нет зарегистрированных аккаунтов';
             const tr = document.createElement('tr');
             tr.innerHTML = `<td colspan="4" class="empty">—</td>`;
             tbody.appendChild(tr);
@@ -151,14 +172,41 @@ onAuthStateChanged(auth, async (user) => {
         snap.forEach((d) => items.push({ id: d.id, ...d.data() }));
         items.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
 
-        subtitle.textContent = `${t['users.total']}: ${items.length}`;
+        subtitle.textContent = `Всего аккаунтов: ${items.length}`;
+
+        const verifiedSvg = `<svg viewBox="0 0 24 24" fill="#a0c4ff" xmlns="http://www.w3.org/2000/svg" style="width:14px;height:14px;vertical-align:-2px;">
+            <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/>
+        </svg>`;
 
         let i = 1;
         items.forEach((data) => {
+            const nick = data.nick || '—';
+            const avatar = data.avatar || null;
+            const initial = (nick || '?').charAt(0).toUpperCase();
+
+            const avatarInner = avatar
+                ? `<img src="${avatar}" alt="">`
+                : escapeHtml(initial);
+
+            const nickColor = data.nickColor || '';
+            const status = data.status || '';
+            const statusColor = data.statusColor || '#a0c4ff';
+            const verified = data.verified ? verifiedSvg : '';
+
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td class="num">${i}</td>
-                <td class="nick">${escapeHtml(data.nick || '—')}</td>
+                <td>
+                    <div class="nick-cell">
+                        <div class="avatar-mini">${avatarInner}</div>
+                        <div>
+                            <div class="nick-name" style="${nickColor ? 'color:' + nickColor : ''}">
+                                ${escapeHtml(nick)} ${verified}
+                            </div>
+                            ${status ? `<div class="user-status" style="color:${statusColor}">${escapeHtml(status)}</div>` : ''}
+                        </div>
+                    </div>
+                </td>
                 <td class="uid" title="${data.id}">#${shortUid(data.id)}</td>
                 <td class="date">${formatDate(data.createdAt)}</td>
             `;

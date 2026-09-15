@@ -14,7 +14,7 @@
     --success: #88cc88; --success-bg: #1f3a1f; --success-border: #335533;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
-body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; transition: 0.2s; }
+body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
 
 .header {
     background: var(--bg-panel); border-bottom: 1px solid var(--border);
@@ -40,7 +40,8 @@ h1 { font-size: 32px; color: var(--text-strong); margin-bottom: 40px; font-weigh
     background: var(--bg-panel); border: 1px solid var(--border);
     margin-bottom: 12px;
 }
-.item img { width: 100px; height: 100px; object-fit: contain; }
+.item img { width: 100px; height: 100px; object-fit: contain; background: var(--bg-input); }
+.item .no-img { width: 100px; height: 100px; background: var(--bg-input); border: 1px solid var(--border); }
 .item .name { font-size: 16px; color: var(--text-strong); }
 .item .unit { font-size: 13px; color: var(--text-muted); margin-top: 6px; }
 
@@ -81,6 +82,7 @@ h1 { font-size: 32px; color: var(--text-strong); margin-bottom: 40px; font-weigh
     text-transform: uppercase; cursor: pointer; transition: 0.2s;
 }
 .checkout-btn:hover { background: var(--bg-hover); }
+.checkout-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -102,7 +104,10 @@ h1 { font-size: 32px; color: var(--text-strong); margin-bottom: 40px; font-weigh
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
-    initSettings, loadSettings, PRODUCTS, formatPrice, tStore,
+    getFirestore, collection, getDocs, addDoc, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import {
+    initSettings, loadSettings, formatPrice,
     getCart, setCartQty, removeFromCart
 } from './common.js';
 
@@ -120,27 +125,43 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
+const db = getFirestore(app);
 
-onAuthStateChanged(auth, (user) => {
+let currentUser = null;
+let productsCache = {};
+
+onAuthStateChanged(auth, async (user) => {
     if (!user) {
         window.location.href = 'auth.html';
         return;
     }
+    currentUser = user;
+    await loadProducts();
     render();
 });
+
+async function loadProducts() {
+    try {
+        const snap = await getDocs(collection(db, 'products'));
+        productsCache = {};
+        snap.forEach((d) => productsCache[d.id] = { id: d.id, ...d.data() });
+    } catch (e) {
+        console.error('loadProducts:', e);
+    }
+}
 
 function render() {
     const settings = loadSettings();
     const lang = settings.lang;
 
-    document.getElementById('cart-title').textContent = tStore('store.cart', lang);
+    document.getElementById('cart-title').textContent = 'Корзина';
 
     const cart = getCart();
     const content = document.getElementById('content');
 
     const ids = Object.keys(cart).filter((id) => cart[id] > 0);
     if (ids.length === 0) {
-        content.innerHTML = `<div class="empty">${tStore('store.empty_cart', lang)}</div>`;
+        content.innerHTML = `<div class="empty">Корзина пуста</div>`;
         return;
     }
 
@@ -148,19 +169,24 @@ function render() {
     let total = 0;
 
     ids.forEach((id) => {
-        const p = PRODUCTS.find((x) => x.id === id);
+        const p = productsCache[id];
         if (!p) return;
         const qty = cart[id];
-        const sum = p.price * qty;
+        const price = Number(p.price || 0);
+        const sum = price * qty;
         total += sum;
+
+        const imgHtml = p.image
+            ? `<img src="${p.image}" alt="">`
+            : `<div class="no-img"></div>`;
 
         html += `
             <div class="item" data-id="${id}">
-                <img src="${p.image}" alt="${p.title[lang] || p.title.ru}">
+                ${imgHtml}
                 <div>
-                    <div class="name">${p.title[lang] || p.title.ru}</div>
-                    <div class="unit">${formatPrice(p.price, lang)}</div>
-                    <button class="remove-btn" data-remove="${id}">${tStore('store.remove', lang)}</button>
+                    <div class="name">${escapeHtml(p.title || 'Без названия')}</div>
+                    <div class="unit">${formatPrice(price, lang)}</div>
+                    <button class="remove-btn" data-remove="${id}">Удалить</button>
                 </div>
                 <div class="qty">
                     <button data-minus="${id}">−</button>
@@ -174,15 +200,14 @@ function render() {
 
     html += `
         <div class="summary">
-            <div class="label">${tStore('store.total', lang)}</div>
+            <div class="label">Итого</div>
             <div class="total">${formatPrice(total, lang)}</div>
         </div>
-        <button class="checkout-btn">${tStore('store.checkout', lang)}</button>
+        <button class="checkout-btn" id="checkout-btn">Оформить заказ</button>
     `;
 
     content.innerHTML = html;
 
-    // Кнопки
     content.querySelectorAll('[data-minus]').forEach((b) => {
         b.addEventListener('click', () => {
             const id = b.dataset.minus;
@@ -205,12 +230,68 @@ function render() {
             render();
         });
     });
-    const checkoutBtn = content.querySelector('.checkout-btn');
-    if (checkoutBtn) {
-        checkoutBtn.addEventListener('click', () => {
-            alert('Заказ оформлен (заглушка)');
+
+    const checkoutBtn = document.getElementById('checkout-btn');
+    checkoutBtn.addEventListener('click', () => checkout(lang));
+}
+
+async function checkout(lang) {
+    if (!currentUser) return;
+    if (!confirm('Оформить заказ?')) return;
+
+    const btn = document.getElementById('checkout-btn');
+    btn.disabled = true;
+    btn.textContent = 'Отправка...';
+
+    try {
+        const cart = getCart();
+        const items = [];
+        let total = 0;
+
+        Object.keys(cart).forEach((id) => {
+            const p = productsCache[id];
+            if (!p) return;
+            const qty = cart[id];
+            const price = Number(p.price || 0);
+            const sum = price * qty;
+            total += sum;
+            items.push({
+                id: p.id,
+                title: p.title || 'Без названия',
+                qty,
+                priceUsd: price,
+                sumUsd: sum
+            });
         });
+
+        const nick = currentUser.displayName || currentUser.email.split('@')[0];
+        const tag = currentUser.uid.slice(0, 8);
+
+        await addDoc(collection(db, 'sales'), {
+            buyerUid: currentUser.uid,
+            buyerNick: nick,
+            buyerTag: tag,
+            items,
+            total,
+            ts: serverTimestamp()
+        });
+
+        localStorage.removeItem('hyojoy_cart');
+        alert('Заказ оформлен! Спасибо за покупку.');
+        window.location.href = 'company.html';
+    } catch (e) {
+        console.error(e);
+        alert('Ошибка: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Оформить заказ';
     }
+}
+
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 </script>
 </body>

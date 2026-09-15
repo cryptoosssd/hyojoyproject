@@ -1,9 +1,9 @@
-// ===== Подключение Firebase =====
+// ===== Firebase =====
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
-    getFirestore, collection, addDoc, query, orderBy, limit,
-    onSnapshot, getDocs
+    getFirestore, collection, addDoc, doc, getDoc, setDoc, updateDoc,
+    onSnapshot, serverTimestamp, increment
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -21,12 +21,14 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 // ===== Настройки =====
-const K = 0.01;              // 1 акция = 0.01 BTC
-const SHAKE = 0.005;         // ±0.5%
-const UPDATE_MS = 5000;      // обновление раз в 5 сек
-const MAX_TICKS = 800;
-
-const TICKS_COLLECTION = 'hyoj_ticks';
+const START_PRICE = 500;
+const DRIFT = 0.002;
+const TICK_MS = 5000;
+const TRADE_IMPACT = 0.0005;
+const MAX_HISTORY = 500;
+const MAX_SHARES = 20000000;
+const MARKET_DOC = 'hyoj';
+const START_BALANCE = 10000;
 
 const TIMEFRAMES = {
     '1m':  { ms: 60 * 1000 },
@@ -38,16 +40,23 @@ const TIMEFRAMES = {
 };
 
 let currentTF = '1h';
-let ticks = [];
-let last = null;
+let marketHistory = [];
+let currentPrice = START_PRICE;
+let currentSold = 0;
+let currentUser = null;
+let userBalance = 0;
+let userShares = 0;
 let canvas = null;
 let ctx = null;
 let mouse = { x: null, y: null, inside: false };
 
 // ===== Утилиты =====
 function fmt(n, d = 2) {
-    return n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    return Number(n).toLocaleString('en-US', {
+        minimumFractionDigits: d, maximumFractionDigits: d
+    });
 }
+function fmtMoney(n) { return '$' + fmt(n); }
 function pad(x) { return String(x).padStart(2, '0'); }
 function timeShort(ts) {
     const d = new Date(ts);
@@ -62,102 +71,319 @@ function timeOnly(ts) {
     return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-// ===== API =====
-async function fetchBTC() {
-    const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    return data.bitcoin.usd;
-}
-
-function computeHyoj(btcPrice, prevPrice) {
-    let base = btcPrice * K;
-    const shake = (Math.random() * 2 - 1) * SHAKE;
-    let price = base * (1 + shake);
-    if (prevPrice) price = prevPrice * 0.75 + price * 0.25;
-    return price;
-}
-
-// ===== Firestore =====
-async function loadTicksFromDB() {
-    const q = query(
-        collection(db, TICKS_COLLECTION),
-        orderBy('t', 'desc'),
-        limit(MAX_TICKS)
-    );
-    const snap = await getDocs(q);
-    const arr = [];
-    snap.forEach((d) => {
-        const data = d.data();
-        arr.push({ t: data.t, p: data.p });
-    });
-    arr.reverse();
-    ticks = arr;
-}
-
-function subscribeTicks() {
-    const q = query(
-        collection(db, TICKS_COLLECTION),
-        orderBy('t', 'desc'),
-        limit(MAX_TICKS)
-    );
-    onSnapshot(q, (snap) => {
-        const arr = [];
-        snap.forEach((d) => {
-            const data = d.data();
-            arr.push({ t: data.t, p: data.p });
+// ===== Рынок =====
+async function loadMarket() {
+    const ref = doc(db, 'market', MARKET_DOC);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+        await setDoc(ref, {
+            price: START_PRICE,
+            sold: 0,
+            history: [],
+            updatedAt: serverTimestamp()
         });
-        arr.reverse();
-        ticks = arr;
-        updateUI();
+        marketHistory = [];
+        currentPrice = START_PRICE;
+        currentSold = 0;
+        return;
+    }
+    const data = snap.data();
+    currentPrice = Number(data.price || START_PRICE);
+    currentSold = Number(data.sold || 0);
+    marketHistory = Array.isArray(data.history) ? data.history : [];
+}
+
+function subscribeMarket() {
+    const ref = doc(db, 'market', MARKET_DOC);
+    onSnapshot(ref, (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.data();
+        currentPrice = Number(data.price || START_PRICE);
+        currentSold = Number(data.sold || 0);
+        marketHistory = Array.isArray(data.history) ? data.history : [];
+        updateMarketUI();
         drawChart();
-    }, (err) => {
-        console.error('onSnapshot error:', err);
-    });
+    }, (e) => console.error('market snapshot:', e));
 }
 
-async function pushTick(price) {
-    await addDoc(collection(db, TICKS_COLLECTION), {
-        t: Date.now(),
-        p: price
-    });
-}
+// ===== Tick =====
+async function tickMarket() {
+    try {
+        const ref = doc(db, 'market', MARKET_DOC);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) return;
+        const data = snap.data();
+        const now = Date.now();
+        const lastTs = data.updatedAt && data.updatedAt.toDate
+            ? data.updatedAt.toDate().getTime() : 0;
+        if (now - lastTs < TICK_MS * 0.9) return;
 
-// ===== Агрегация слотов =====
-// Возвращает slotsCount слотов, привязанных к абсолютному времени.
-// Правый слот = текущий bucket (сейчас). Слоты идут справа налево в прошлое.
-function buildCandles(ticks, bucketMs, slotsCount) {
-    if (slotsCount < 1) return [];
+        let price = Number(data.price || START_PRICE);
+        const drift = (Math.random() * 2 - 1) * DRIFT;
+        price = price * (1 + drift);
+        price = Math.max(1, Math.round(price * 100) / 100);
 
-    const now = Date.now();
-    const rightBucket = Math.floor(now / bucketMs) * bucketMs;
-    const leftBucket = rightBucket - (slotsCount - 1) * bucketMs;
-
-    const map = new Map();
-    for (let i = 0; i < slotsCount; i++) {
-        map.set(leftBucket + i * bucketMs, null);
-    }
-
-    for (const t of ticks) {
-        const bt = Math.floor(t.t / bucketMs) * bucketMs;
-        if (bt < leftBucket || bt > rightBucket) continue;
-        const cur = map.get(bt);
-        if (!cur) {
-            map.set(bt, { t: bt, o: t.p, h: t.p, l: t.p, c: t.p });
+        let history = Array.isArray(data.history) ? data.history.slice() : [];
+        const bucket = Math.floor(now / TIMEFRAMES['1m'].ms) * TIMEFRAMES['1m'].ms;
+        const cur = history[history.length - 1];
+        if (cur && cur.t === bucket) {
+            cur.c = price;
+            if (price > cur.h) cur.h = price;
+            if (price < cur.l) cur.l = price;
         } else {
-            cur.c = t.p;
-            if (t.p > cur.h) cur.h = t.p;
-            if (t.p < cur.l) cur.l = t.p;
+            history.push({ t: bucket, o: price, h: price, l: price, c: price });
+            if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);
         }
+
+        await updateDoc(ref, {
+            price,
+            history,
+            updatedAt: serverTimestamp()
+        });
+    } catch (e) {
+        console.error('tickMarket:', e);
+    }
+}
+
+// ===== Юзер =====
+async function loadUser() {
+    const ref = doc(db, 'users', currentUser.uid);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
+    const data = snap.data();
+    userBalance = Number(data.balanceUSD ?? START_BALANCE);
+    userShares = Number(data.sharesHYOJ ?? 0);
+
+    if (data.balanceUSD === undefined || data.sharesHYOJ === undefined) {
+        await updateDoc(ref, {
+            balanceUSD: userBalance,
+            sharesHYOJ: userShares
+        });
+    }
+    updateUserUI();
+}
+
+function subscribeUser() {
+    const ref = doc(db, 'users', currentUser.uid);
+    onSnapshot(ref, (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.data();
+        userBalance = Number(data.balanceUSD ?? START_BALANCE);
+        userShares = Number(data.sharesHYOJ ?? 0);
+        updateUserUI();
+    });
+}
+
+// ===== Купить =====
+async function buyShares() {
+    const btn = document.getElementById('buy-btn');
+    if (btn.disabled) return;
+    btn.disabled = true;
+
+    const qty = parseInt(document.getElementById('trade-qty').value, 10);
+    if (!qty || qty < 1) {
+        btn.disabled = false;
+        return showMsg('trade-msg', 'Введите количество', 'error');
     }
 
-    const out = [];
-    for (let i = 0; i < slotsCount; i++) {
-        const bt = leftBucket + i * bucketMs;
-        out.push({ t: bt, candle: map.get(bt) });
+    try {
+        // Читаем актуальные данные пользователя и рынка
+        const userRef = doc(db, 'users', currentUser.uid);
+        const marketRef = doc(db, 'market', MARKET_DOC);
+
+        const [userSnap, marketSnap] = await Promise.all([
+            getDoc(userRef),
+            getDoc(marketRef)
+        ]);
+
+        if (!userSnap.exists()) {
+            btn.disabled = false;
+            return showMsg('trade-msg', 'Профиль не найден', 'error');
+        }
+        if (!marketSnap.exists()) {
+            btn.disabled = false;
+            return showMsg('trade-msg', 'Рынок недоступен', 'error');
+        }
+
+        const realBalance = Number(userSnap.data().balanceUSD ?? START_BALANCE);
+        const marketData = marketSnap.data();
+        const realPrice = Number(marketData.price || START_PRICE);
+        const realSold = Number(marketData.sold || 0);
+
+        const cost = qty * realPrice;
+
+        if (cost > realBalance) {
+            btn.disabled = false;
+            return showMsg('trade-msg',
+                `Недостаточно средств. Баланс: ${fmtMoney(realBalance)}`, 'error');
+        }
+
+        if (realSold + qty > MAX_SHARES) {
+            const left = MAX_SHARES - realSold;
+            btn.disabled = false;
+            return showMsg('trade-msg',
+                left > 0
+                    ? `Осталось только ${left.toLocaleString('ru-RU')} акций`
+                    : 'Лимит акций исчерпан',
+                'error');
+        }
+
+        // Обновляем пользователя и рынок
+        await updateDoc(userRef, {
+            balanceUSD: increment(-cost),
+            sharesHYOJ: increment(qty)
+        });
+
+        const impact = 1 + TRADE_IMPACT * qty;
+        const newPrice = Math.round(realPrice * impact * 100) / 100;
+
+        await updateDoc(marketRef, {
+            price: newPrice,
+            sold: increment(qty)
+        });
+
+        const nick = currentUser.displayName || currentUser.email.split('@')[0];
+        await addDoc(collection(db, 'trades'), {
+            uid: currentUser.uid,
+            nick,
+            tag: currentUser.uid.slice(0, 8),
+            type: 'buy',
+            qty,
+            price: realPrice,
+            total: cost,
+            ts: serverTimestamp()
+        });
+
+        showMsg('trade-msg', `Куплено ${qty} акций за ${fmtMoney(cost)}`, 'success');
+    } catch (e) {
+        console.error(e);
+        showMsg('trade-msg', 'Ошибка: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
     }
-    return out;
+}
+
+// ===== Продать =====
+async function sellShares() {
+    const btn = document.getElementById('sell-btn');
+    if (btn.disabled) return;
+    btn.disabled = true;
+
+    const qty = parseInt(document.getElementById('trade-qty').value, 10);
+    if (!qty || qty < 1) {
+        btn.disabled = false;
+        return showMsg('trade-msg', 'Введите количество', 'error');
+    }
+
+    try {
+        const userRef = doc(db, 'users', currentUser.uid);
+        const marketRef = doc(db, 'market', MARKET_DOC);
+
+        const [userSnap, marketSnap] = await Promise.all([
+            getDoc(userRef),
+            getDoc(marketRef)
+        ]);
+
+        if (!userSnap.exists()) {
+            btn.disabled = false;
+            return showMsg('trade-msg', 'Профиль не найден', 'error');
+        }
+        if (!marketSnap.exists()) {
+            btn.disabled = false;
+            return showMsg('trade-msg', 'Рынок недоступен', 'error');
+        }
+
+        const realShares = Number(userSnap.data().sharesHYOJ || 0);
+        const marketData = marketSnap.data();
+        const realPrice = Number(marketData.price || START_PRICE);
+
+        if (qty > realShares) {
+            btn.disabled = false;
+            return showMsg('trade-msg',
+                `Недостаточно акций. У вас ${realShares}`, 'error');
+        }
+
+        const revenue = qty * realPrice;
+
+        await updateDoc(userRef, {
+            balanceUSD: increment(revenue),
+            sharesHYOJ: increment(-qty)
+        });
+
+        const impact = 1 - TRADE_IMPACT * qty;
+        const newPrice = Math.round(realPrice * Math.max(0.5, impact) * 100) / 100;
+
+        await updateDoc(marketRef, {
+            price: newPrice,
+            sold: increment(-qty)
+        });
+
+        const nick = currentUser.displayName || currentUser.email.split('@')[0];
+        await addDoc(collection(db, 'trades'), {
+            uid: currentUser.uid,
+            nick,
+            tag: currentUser.uid.slice(0, 8),
+            type: 'sell',
+            qty,
+            price: realPrice,
+            total: revenue,
+            ts: serverTimestamp()
+        });
+
+        showMsg('trade-msg', `Продано ${qty} акций за ${fmtMoney(revenue)}`, 'success');
+    } catch (e) {
+        console.error(e);
+        showMsg('trade-msg', 'Ошибка: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function showMsg(id, text, type) {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.className = 'message ' + type;
+    setTimeout(() => { el.className = 'message'; }, 3000);
+}
+
+// ===== UI =====
+function updateMarketUI() {
+    document.getElementById('price').textContent = fmtMoney(currentPrice);
+    document.getElementById('marketcap').textContent = '$' + Math.round(currentPrice * MAX_SHARES).toLocaleString('en-US');
+    document.getElementById('updated').textContent = timeOnly(Date.now());
+
+    const bucket = TIMEFRAMES[currentTF].ms;
+    const fromTs = Date.now() - bucket;
+    const inRange = marketHistory.filter((c) => c.t >= fromTs);
+    const first = inRange.length ? inRange[0].o : currentPrice;
+    const change = ((currentPrice - first) / first) * 100;
+
+    const changeEl = document.getElementById('change');
+    changeEl.textContent = (change >= 0 ? '+' : '') + change.toFixed(2) + '%';
+    changeEl.className = 'change ' + (change >= 0 ? 'up' : 'down');
+
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const dayCandles = marketHistory.filter((c) => c.t >= dayAgo);
+    if (dayCandles.length) {
+        document.getElementById('high').textContent = fmtMoney(Math.max(...dayCandles.map((c) => c.h)));
+        document.getElementById('low').textContent = fmtMoney(Math.min(...dayCandles.map((c) => c.l)));
+    } else {
+        document.getElementById('high').textContent = fmtMoney(currentPrice);
+        document.getElementById('low').textContent = fmtMoney(currentPrice);
+    }
+
+    const remaining = Math.max(0, MAX_SHARES - currentSold);
+    const remEl = document.getElementById('shares-remaining');
+    if (remEl) remEl.textContent = remaining.toLocaleString('ru-RU');
+
+    const qty = parseInt(document.getElementById('trade-qty').value, 10) || 0;
+    document.getElementById('trade-cost').textContent = 'Итого: ' + fmtMoney(qty * currentPrice);
+}
+
+function updateUserUI() {
+    document.getElementById('user-balance').textContent = fmtMoney(userBalance);
+    document.getElementById('user-shares').textContent = userShares.toLocaleString('ru-RU');
+    document.getElementById('portfolio-value').textContent = fmtMoney(userShares * currentPrice);
 }
 
 // ===== График =====
@@ -170,6 +396,36 @@ function resizeCanvas() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
+function buildCandles(bucketMs, slotsCount) {
+    if (slotsCount < 1) return [];
+    const now = Date.now();
+    const rightBucket = Math.floor(now / bucketMs) * bucketMs;
+    const leftBucket = rightBucket - (slotsCount - 1) * bucketMs;
+
+    const map = new Map();
+    for (let i = 0; i < slotsCount; i++) {
+        map.set(leftBucket + i * bucketMs, null);
+    }
+    for (const c of marketHistory) {
+        const bt = Math.floor(c.t / bucketMs) * bucketMs;
+        if (bt < leftBucket || bt > rightBucket) continue;
+        const cur = map.get(bt);
+        if (!cur) {
+            map.set(bt, { t: bt, o: c.o, h: c.h, l: c.l, c: c.c });
+        } else {
+            cur.c = c.c;
+            if (c.h > cur.h) cur.h = c.h;
+            if (c.l < cur.l) cur.l = c.l;
+        }
+    }
+    const out = [];
+    for (let i = 0; i < slotsCount; i++) {
+        const bt = leftBucket + i * bucketMs;
+        out.push({ t: bt, candle: map.get(bt) });
+    }
+    return out;
+}
+
 function drawChart() {
     if (!canvas || !ctx) return;
     const w = canvas.clientWidth;
@@ -177,20 +433,13 @@ function drawChart() {
     ctx.clearRect(0, 0, w, h);
 
     const bucket = TIMEFRAMES[currentTF].ms;
-
-    const padL = 10;
-    const padR = 90;
-    const padT = 20;
-    const padB = 34;
+    const padL = 10, padR = 90, padT = 20, padB = 34;
     const chartW = w - padL - padR;
     const chartH = h - padT - padB;
-
-    const SLOT_PX = 56;
-    const CANDLE_PX = 18;
-
+    const SLOT_PX = 56, CANDLE_PX = 18;
     const slotsCount = Math.max(3, Math.floor(chartW / SLOT_PX));
 
-    const slots = buildCandles(ticks, bucket, slotsCount);
+    const slots = buildCandles(bucket, slotsCount);
     const realCandles = slots.filter((s) => s.candle).map((s) => s.candle);
 
     if (realCandles.length === 0) {
@@ -208,58 +457,38 @@ function drawChart() {
         if (c.h > max) max = c.h;
     }
     const padding = (max - min) * 0.08 || 1;
-    min -= padding;
-    max += padding;
+    min -= padding; max += padding;
     const range = max - min;
 
     const priceToY = (p) => padT + chartH * (1 - (p - min) / range);
     const yToPrice = (y) => max - ((y - padT) / chartH) * range;
-
-    // Правый край = самая новая свеча. Сетка прижата вправо.
     const usedW = slotsCount * SLOT_PX;
     const startX = padL + Math.max(0, chartW - usedW);
 
-    // ===== Горизонтальная сетка =====
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
     ctx.font = '11px Arial';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    const gridLines = 6;
-    for (let i = 0; i <= gridLines; i++) {
-        const y = padT + (chartH / gridLines) * i;
+    for (let i = 0; i <= 6; i++) {
+        const y = padT + (chartH / 6) * i;
         ctx.beginPath();
         ctx.moveTo(padL, y);
         ctx.lineTo(padL + chartW, y);
         ctx.stroke();
-        const price = max - (range / gridLines) * i;
+        const price = max - (range / 6) * i;
         ctx.fillStyle = '#777';
         ctx.fillText('$' + fmt(price), padL + chartW + 8, y);
     }
 
-    // ===== Вертикальные линии слотов =====
-    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
-    for (let i = 0; i <= slotsCount; i++) {
-        const x = startX + i * SLOT_PX;
-        if (x < padL || x > padL + chartW) continue;
-        ctx.beginPath();
-        ctx.moveTo(x, padT);
-        ctx.lineTo(x, padT + chartH);
-        ctx.stroke();
-    }
-
-    // ===== Свечи =====
     for (let i = 0; i < slots.length; i++) {
         const slot = slots[i];
         if (!slot.candle) continue;
         const c = slot.candle;
-
         const xCenter = startX + SLOT_PX * i + SLOT_PX / 2;
         if (xCenter < padL - SLOT_PX || xCenter > padL + chartW + SLOT_PX) continue;
-
         const up = c.c >= c.o;
         const color = up ? '#6ee7a8' : '#e07a7a';
 
-        // Фитиль
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -268,23 +497,15 @@ function drawChart() {
         ctx.lineTo(x, priceToY(c.l));
         ctx.stroke();
 
-        // Тело
         const yOpen = priceToY(c.o);
         const yClose = priceToY(c.c);
         const top = Math.min(yOpen, yClose);
         const bot = Math.max(yOpen, yClose);
         const bodyH = Math.max(3, bot - top);
-
         ctx.fillStyle = color;
-        ctx.fillRect(
-            Math.floor(xCenter - CANDLE_PX / 2),
-            Math.floor(top),
-            CANDLE_PX,
-            Math.ceil(bodyH)
-        );
+        ctx.fillRect(Math.floor(xCenter - CANDLE_PX / 2), Math.floor(top), CANDLE_PX, Math.ceil(bodyH));
     }
 
-    // ===== Ось времени =====
     ctx.fillStyle = '#777';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -295,7 +516,6 @@ function drawChart() {
         ctx.fillText(timeShort(slots[i].t), xCenter, padT + chartH + 10);
     }
 
-    // ===== Кроссхэйр =====
     if (mouse.inside && mouse.x >= padL && mouse.x <= padL + chartW && mouse.y >= padT && mouse.y <= padT + chartH) {
         const relX = mouse.x - startX;
         const idx = Math.floor(relX / SLOT_PX);
@@ -355,59 +575,7 @@ function drawChart() {
     ctx.fillText('HYOJ · ' + currentTF.toUpperCase(), padL + 2, padT + chartH + 10);
 }
 
-// ===== UI =====
-function updateUI() {
-    if (!ticks.length) return;
-    const cur = ticks[ticks.length - 1];
-    const rounded = cur.p;
-
-    document.getElementById('price').textContent = '$' + fmt(rounded);
-
-    const bucket = TIMEFRAMES[currentTF].ms;
-    const now = Date.now();
-    const fromTs = now - bucket;
-    const inRange = ticks.filter((x) => x.t >= fromTs);
-    const first = inRange.length ? inRange[0].p : rounded;
-    const change = ((rounded - first) / first) * 100;
-
-    const changeEl = document.getElementById('change');
-    changeEl.textContent = (change >= 0 ? '+' : '') + change.toFixed(2) + '%';
-    changeEl.className = 'change ' + (change >= 0 ? 'up' : 'down');
-
-    const dayAgo = now - 24 * 60 * 60 * 1000;
-    const dayTicks = ticks.filter((x) => x.t >= dayAgo);
-    const prices = dayTicks.length ? dayTicks.map((x) => x.p) : [rounded];
-    document.getElementById('high').textContent = '$' + fmt(Math.max(...prices));
-    document.getElementById('low').textContent = '$' + fmt(Math.min(...prices));
-
-    document.getElementById('k').textContent = K.toFixed(2);
-    if (last) document.getElementById('btc').textContent = '$' + Math.round(last.btc).toLocaleString('en-US');
-    document.getElementById('updated').textContent = timeOnly(cur.t);
-}
-
-// ===== Основной цикл =====
-async function update() {
-    const statusEl = document.getElementById('status');
-    try {
-        statusEl.textContent = 'Загрузка...';
-        const btc = await fetchBTC();
-
-        const prevPrice = ticks.length ? ticks[ticks.length - 1].p : null;
-        const price = computeHyoj(btc, prevPrice);
-        const rounded = Math.round(price * 100) / 100;
-
-        last = { btc, price: rounded };
-
-        await pushTick(rounded);
-
-        statusEl.textContent = 'LIVE';
-    } catch (e) {
-        console.error(e);
-        statusEl.textContent = 'Ошибка сети';
-    }
-}
-
-// ===== Инициализация =====
+// ===== Init =====
 window.addEventListener('DOMContentLoaded', () => {
     canvas = document.getElementById('chart');
     ctx = canvas.getContext('2d');
@@ -434,23 +602,30 @@ window.addEventListener('DOMContentLoaded', () => {
         drawChart();
     });
 
+    document.getElementById('trade-qty').addEventListener('input', updateMarketUI);
+
     onAuthStateChanged(auth, async (user) => {
         if (!user) {
             window.location.href = 'auth.html';
             return;
         }
+        currentUser = user;
 
-        try {
-            await loadTicksFromDB();
-            updateUI();
-            drawChart();
-        } catch (e) {
-            console.error('loadTicksFromDB error:', e);
-        }
+        await loadMarket();
+        await loadUser();
 
-        subscribeTicks();
-        update();
-        setInterval(update, UPDATE_MS);
+        subscribeMarket();
+        subscribeUser();
+
+        updateMarketUI();
+        updateUserUI();
+        drawChart();
+
+        document.getElementById('buy-btn').addEventListener('click', buyShares);
+        document.getElementById('sell-btn').addEventListener('click', sellShares);
+
+        setInterval(tickMarket, TICK_MS);
+        setTimeout(tickMarket, 1000);
     });
 });
 

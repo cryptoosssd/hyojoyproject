@@ -14,7 +14,7 @@
     --success: #88cc88; --success-bg: #1f3a1f; --success-border: #335533;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
-body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; transition: 0.2s; }
+body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
 
 .header {
     background: var(--bg-panel); border-bottom: 1px solid var(--border);
@@ -32,12 +32,8 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; display: fl
 
 .main { flex: 1; padding: 60px 40px; max-width: 1100px; margin: 0 auto; width: 100%; }
 
-.product {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: start;
-}
-@media (max-width: 800px) {
-    .product { grid-template-columns: 1fr; gap: 30px; }
-}
+.product { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: start; }
+@media (max-width: 800px) { .product { grid-template-columns: 1fr; gap: 30px; } }
 
 .product-img {
     background: var(--bg-panel); border: 1px solid var(--border);
@@ -57,11 +53,18 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; display: fl
     border: 1px solid var(--success-border); margin-bottom: 20px;
 }
 .stock.out { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
-.price {
-    font-size: 42px; color: var(--text-strong); margin-bottom: 24px;
-    font-weight: 300; letter-spacing: 1px;
+.price { font-size: 42px; color: var(--text-strong); margin-bottom: 24px; font-weight: 300; letter-spacing: 1px; }
+.desc { color: var(--text); line-height: 1.7; font-size: 14px; margin-bottom: 32px; white-space: pre-wrap; }
+
+.qty-row {
+    display: flex; gap: 12px; margin-bottom: 16px; align-items: center;
 }
-.desc { color: var(--text); line-height: 1.7; font-size: 14px; margin-bottom: 32px; }
+.qty-row label { font-size: 12px; color: var(--text-dim); letter-spacing: 1px; text-transform: uppercase; }
+.qty-input {
+    width: 80px; padding: 10px;
+    background: var(--bg-input); border: 1px solid var(--border);
+    color: var(--text); font-size: 14px; outline: none;
+}
 
 .add-btn {
     width: 100%; padding: 18px; background: var(--bg-active);
@@ -91,10 +94,8 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; display: fl
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import {
-    initSettings, loadSettings, PRODUCTS, formatPrice, tStore,
-    addToCart, getCartCount
-} from './common.js';
+import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { initSettings, loadSettings, formatPrice, addToCart, getCartCount } from './common.js';
 
 initSettings();
 
@@ -110,8 +111,11 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
+const db = getFirestore(app);
 
-onAuthStateChanged(auth, (user) => {
+let product = null;
+
+onAuthStateChanged(auth, async (user) => {
     if (!user) {
         window.location.href = 'auth.html';
         return;
@@ -119,58 +123,84 @@ onAuthStateChanged(auth, (user) => {
     render();
 });
 
-function render() {
+async function render() {
     const settings = loadSettings();
     const lang = settings.lang;
-
-    const params = new URLSearchParams(window.location.search);
-    const id = params.get('id');
-    const product = PRODUCTS.find((p) => p.id === id);
     const main = document.getElementById('main');
 
     document.getElementById('cart-count').textContent = getCartCount();
 
-    if (!product) {
-        main.innerHTML = `<div class="not-found">${tStore('store.product_not_found', lang)}</div>`;
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('id');
+
+    if (!id) {
+        main.innerHTML = '<div class="not-found">Товар не найден</div>';
         return;
     }
 
-    const title = product.title[lang] || product.title.ru;
-    const desc = product.description[lang] || product.description.ru;
-    const inStock = product.stock > 0;
+    try {
+        const snap = await getDoc(doc(db, 'products', id));
+        if (!snap.exists()) {
+            main.innerHTML = '<div class="not-found">Товар не найден</div>';
+            return;
+        }
+        product = { id, ...snap.data() };
 
-    main.innerHTML = `
-        <div class="product">
-            <div class="product-img">
-                <img src="${product.image}" alt="${title}">
-            </div>
-            <div class="product-info">
-                <h1>${title}</h1>
-                <div class="stock ${inStock ? '' : 'out'}">
-                    ${inStock ? tStore('store.in_stock', lang) : tStore('store.out_of_stock', lang)}
+        const title = product.title || 'Без названия';
+        const desc = product.description || product.short || '';
+        const inStock = Number(product.stock || 0) > 0;
+
+        document.title = title + ' — HyoJoy';
+
+        main.innerHTML = `
+            <div class="product">
+                <div class="product-img">
+                    ${product.image ? `<img src="${product.image}" alt="">` : ''}
                 </div>
-                <div class="price">${formatPrice(product.price, lang)}</div>
-                <p class="desc">${desc}</p>
-                <button class="add-btn" id="add-btn" ${inStock ? '' : 'disabled'}>
-                    ${tStore('store.add_to_cart', lang)}
-                </button>
+                <div class="product-info">
+                    <h1>${escapeHtml(title)}</h1>
+                    <div class="stock ${inStock ? '' : 'out'}">
+                        ${inStock ? 'В наличии' : 'Нет в наличии'}
+                    </div>
+                    <div class="price">${formatPrice(Number(product.price || 0), lang)}</div>
+                    <p class="desc">${escapeHtml(desc)}</p>
+
+                    <div class="qty-row">
+                        <label>Количество:</label>
+                        <input type="number" class="qty-input" id="qty" value="1" min="1" step="1">
+                    </div>
+
+                    <button class="add-btn" id="add-btn" ${inStock ? '' : 'disabled'}>
+                        Добавить в корзину
+                    </button>
+                </div>
             </div>
-        </div>
-    `;
+        `;
 
-    document.title = title + ' — HyoJoy';
+        const btn = document.getElementById('add-btn');
+        btn.addEventListener('click', () => {
+            const qty = parseInt(document.getElementById('qty').value, 10) || 1;
+            if (qty < 1) return;
+            addToCart(product.id, qty);
+            document.getElementById('cart-count').textContent = getCartCount();
+            btn.classList.add('added');
+            btn.textContent = 'Добавлено';
+            setTimeout(() => {
+                btn.classList.remove('added');
+                btn.textContent = 'Добавить в корзину';
+            }, 1500);
+        });
+    } catch (e) {
+        console.error(e);
+        main.innerHTML = '<div class="not-found">Ошибка: ' + e.message + '</div>';
+    }
+}
 
-    const btn = document.getElementById('add-btn');
-    btn.addEventListener('click', () => {
-        addToCart(product.id, 1);
-        document.getElementById('cart-count').textContent = getCartCount();
-        btn.classList.add('added');
-        btn.textContent = tStore('store.added', lang);
-        setTimeout(() => {
-            btn.classList.remove('added');
-            btn.textContent = tStore('store.add_to_cart', lang);
-        }, 1500);
-    });
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 </script>
 </body>
